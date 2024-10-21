@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SAM2 Segmentation Tool</title>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+        }
+
+        .container {
+            text-align: center;
+            background-color: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            max-width: 800px;
+            width: 100%;
+        }
+
+        #imageContainer {
+            position: relative;
+            display: inline-block;
+            margin-top: 20px;
+            max-width: 100%;
+        }
+
+        #uploadedImage,
+        #resultImage {
+            max-width: 100%;
+            max-height: 60vh;
+            display: block;
+            margin: 0 auto;
+        }
+
+        .point {
+            position: absolute;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+        button {
+            margin: 10px;
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+        input[type="number"] {
+            margin: 10px;
+            padding: 5px;
+            width: 150px;
+        }
+
+        #distanceResult {
+            margin-top: 20px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>SAM2 Segmentation Tool</h1>
+        {% if not model_loaded %}
+        <div style="color: red; margin-bottom: 20px;">
+            Warning: Model checkpoint not found. Please download it from
+            <a href="https://dl.fbaipublicfiles.com/sam2/sam2.1_hiera_large.pt" target="_blank">here</a>
+            and place it in the 'checkpoints' folder.
+        </div>
+        {% endif %}
+        <input type="file" id="fileInput" accept="image/*">
+        <button id="uploadBtn">Upload</button>
+        <button id="switchSetBtn">Current Set: 1</button>
+        <input type="number" id="object1HeightInput" placeholder="Object 1 Height (m)" step="0.01">
+        <input type="number" id="object2HeightInput" placeholder="Object 2 Height (m)" step="0.01">
+        <input type="number" id="distanceInput" placeholder="Distance to Object 1 (m)" step="0.01">
+        <button id="segmentBtn" disabled>Segment</button>
+        <button id="clearBtn" disabled>Clear Points</button>
+        <div id="imageContainer">
+            <img id="uploadedImage" style="display: none;">
+            <img id="resultImage" style="display: none;">
+        </div>
+        <div id="distanceResult"></div>
+    </div>
+
+    <script>
+        let pointsSets = [[], []];
+        let currentSet = 0;
+        let filename = '';
+
+        $('#uploadBtn').click(function () {
+            const file = $('#fileInput')[0].files[0];
+            if (file) {
+                const formData = new FormData();
+                formData.append('file', file);
+                $.ajax({
+                    url: '/upload',
+                    type: 'POST',
+                    data: formData,
+                    processData: false,
+                    contentType: false,
+                    beforeSend: function () {
+                        $('#uploadBtn').prop('disabled', true).text('Uploading...');
+                    },
+                    success: function (data) {
+                        if (data.error) {
+                            alert('Upload error: ' + data.error);
+                        } else {
+                            filename = data.filename;
+                            $('#uploadedImage').attr('src', data.image_url + '?t=' + new Date().getTime()).show();
+                            $('#resultImage').hide();
+                            $('#segmentBtn').prop('disabled', false);
+                            $('#clearBtn').prop('disabled', false);
+                            pointsSets = [[], []];
+                            $('.point').remove();
+                            alert('Upload successful!');
+                        }
+                    },
+                    error: function (jqXHR, textStatus, errorThrown) {
+                        alert('Upload failed: ' + textStatus);
+                    },
+                    complete: function () {
+                        $('#uploadBtn').prop('disabled', false).text('Upload');
+                    }
+                });
+            } else {
+                alert('Please select a file first.');
+            }
+        });
+
+        $('#imageContainer').on('click', '#uploadedImage', function (e) {
+            const rect = this.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            const pointElement = $('<div class="point"></div>').css({
+                left: (x / rect.width * 100) + '%',
+                top: (y / rect.height * 100) + '%',
+                backgroundColor: currentSet === 0 ? 'red' : 'blue'
+            });
+            $('#imageContainer').append(pointElement);
+            pointsSets[currentSet].push([x / rect.width * this.naturalWidth, y / rect.height * this.naturalHeight]);
+        });
+
+        $('#switchSetBtn').click(function () {
+            currentSet = 1 - currentSet;  // Switch between 0 and 1
+            $(this).text('Current Set: ' + (currentSet + 1));
+        });
+
+        $('#segmentBtn').click(function () {
+            if (pointsSets[0].length > 0 && pointsSets[1].length > 0) {
+                const object1Height = parseFloat($('#object1HeightInput').val()) || 0;
+                const object2Height = parseFloat($('#object2HeightInput').val()) || 0;
+                const distanceToObject1 = parseFloat($('#distanceInput').val()) || 0;
+                $.ajax({
+                    url: '/segment',
+                    type: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify({
+                        filename: filename,
+                        points_sets: pointsSets,
+                        object1_height: object1Height,
+                        object2_height: object2Height,
+                        distance_to_object1: distanceToObject1
+                    }),
+                    success: function (data) {
+                        if (data.error) {
+                            alert(data.error);
+                        } else {
+                            $('#resultImage').attr('src', 'data:image/png;base64,' + data.image).show();
+                            $('#uploadedImage').hide();
+                            $('.point').remove();
+                            if (data.distance !== null) {
+                                $('#distanceResult').text(`Calculated distance between objects: ${data.distance.toFixed(2)} meters`);
+                            }
+                        }
+                    }
+                });
+            } else {
+                alert('Please select points for both objects');
+            }
+        });
+
+        $('#clearBtn').click(function () {
+            pointsSets = [[], []];
+            currentSet = 0;
+            $('.point').remove();
+            $('#resultImage').hide();
+            $('#uploadedImage').show();
+            $('#switchSetBtn').text('Current Set: 1');
+            $('#distanceResult').text('');
+            $('#object1HeightInput').val('');
+            $('#object2HeightInput').val('');
+            $('#distanceInput').val('');
+        });
+    </script>
+</body>
+
+</html>
